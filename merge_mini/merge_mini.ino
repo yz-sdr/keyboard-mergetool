@@ -3,7 +3,8 @@
 #include <usbhub.h>
 #include <hidboot.h>
 
-#include <Keyboard.h>
+#include <HID-Project.h>
+#include <HID-Settings.h>
 
 USB Usb;
 USBHub Hub(&Usb);
@@ -11,7 +12,6 @@ USBHub Hub(&Usb);
 HIDBoot<USB_HID_PROTOCOL_KEYBOARD> Kbd1(&Usb);
 HIDBoot<USB_HID_PROTOCOL_KEYBOARD> Kbd2(&Usb);
 
-// bit def
 enum : uint8_t {
   K_Z = 0,
   K_X,
@@ -30,99 +30,65 @@ enum : uint8_t {
 };
 
 struct DevState {
-  // uint8_t mods = 0;     // Shift/Ctrl
-  uint16_t mask = 0;    // 12-bit keys
+  uint16_t mask = 0;
 };
 
 static DevState s1, s2;
-
-// static uint8_t outMods = 0;
 static uint16_t outMask = 0;
+static volatile bool dirty = false;
 
 static inline void setKey(uint16_t &m, uint8_t bit) { m |=  (uint16_t(1) << bit); }
 static inline void clrKey(uint16_t &m, uint8_t bit) { m &= ~(uint16_t(1) << bit); }
 
-// HID usage
+// Host：HID usage
 static uint8_t usageToBit(uint8_t u) {
   switch (u) {
+    case 0x1D: return K_Z;     // Z
+    case 0x1B: return K_X;     // X
+    case 0x06: return K_C;     // C
+    case 0x19: return K_V;     // V
+    case 0x29: return K_ESC;   // Esc
+    case 0x05: return K_B;     // B
+    case 0x07: return K_D;     // D
 
-    // Z=0x1D, X=0x1B, C=0x06, V=0x19, B=0x05, D=0x07
-    case 0x1D: return K_Z;
-    case 0x1B: return K_X;
-    case 0x06: return K_C;
-    case 0x19: return K_V;
-    case 0x29: return K_ESC;
-    case 0x05: return K_B;
-    case 0x07: return K_D;
+    case 0x4B: return K_PGUP;  // Page Up
+    case 0x4E: return K_PGDN;  // Page Down
 
-    case 0x4B: return K_PGUP;   
-    case 0x4E: return K_PGDN;  
-    case 0x52: return K_UP;
-    case 0x51: return K_DOWN;
-    case 0x50: return K_LEFT;
-    case 0x4F: return K_RIGHT;
+    case 0x52: return K_UP;    // Up
+    case 0x51: return K_DOWN;  // Down
+    case 0x50: return K_LEFT;  // Left
+    case 0x4F: return K_RIGHT; // Right
   }
   return 0xFF;
 }
 
-// bit -> Arduino Keyboard.press/release
-static uint8_t bitToArduinoKey(uint8_t bit) {
+// HID-Project KeyboardKeycode
+static bool bitToKeycode(uint8_t bit, KeyboardKeycode &out) {
   switch (bit) {
-    case K_Z:    return 'z';
-    case K_X:    return 'x';
-    case K_C:    return 'c';
-    case K_V:    return 'v';
-    case K_ESC:  return KEY_ESC;
-    case K_B:    return 'b';
-    case K_D:    return 'd';
+    case K_Z:     out = KEY_Z; break;
+    case K_X:     out = KEY_X; break;
+    case K_C:     out = KEY_C; break;
+    case K_V:     out = KEY_V; break;
+    case K_ESC:   out = KEY_ESC; break;
+    case K_B:     out = KEY_B; break;
+    case K_D:     out = KEY_D; break;
 
-    case K_PGUP: return KEY_PAGE_UP;
-    case K_PGDN: return KEY_PAGE_DOWN;
+    case K_PGUP:  out = KEY_PAGE_UP; break;
+    case K_PGDN:  out = KEY_PAGE_DOWN; break;
 
-    case K_UP:    return KEY_UP_ARROW;
-    case K_DOWN:  return KEY_DOWN_ARROW;
-    case K_LEFT:  return KEY_LEFT_ARROW;
-    case K_RIGHT: return KEY_RIGHT_ARROW;
+    case K_UP:    out = KEY_UP_ARROW; break;
+    case K_DOWN:  out = KEY_DOWN_ARROW; break;
+    case K_LEFT:  out = KEY_LEFT_ARROW; break;
+    case K_RIGHT: out = KEY_RIGHT_ARROW; break;
+
+    default:
+      return false;
   }
-  return 0;
+  return true;
 }
 
-// mods bit -> Arduino key
-/*
-static uint8_t modToArduinoKey(uint8_t bitIndex) {
-  switch (bitIndex) {
-    case 0: return KEY_LEFT_CTRL;
-    case 1: return KEY_LEFT_SHIFT;
-    case 2: return KEY_LEFT_ALT;
-    case 3: return KEY_LEFT_GUI;
-    case 4: return KEY_RIGHT_CTRL;
-    case 5: return KEY_RIGHT_SHIFT;
-    case 6: return KEY_RIGHT_ALT;
-    case 7: return KEY_RIGHT_GUI;
-  }
-  return 0;
-}
-*/
-static void syncOutput() {
-  // mods
-  /*
-  uint8_t newMods = s1.mods | s2.mods;
-  uint8_t diffM = outMods ^ newMods;
-  if (diffM) {
-    for (uint8_t b = 0; b < 8; b++) {
-      uint8_t mask = (1u << b);
-      if (!(diffM & mask)) continue;
-      uint8_t mk = modToArduinoKey(b);
-      if (!mk) continue;
 
-      if (newMods & mask) Keyboard.press(mk);
-      else                Keyboard.release(mk);
-    }
-    outMods = newMods;
-  }
-  */
-
-  // mask
+static void syncOutputOnce() {
   uint16_t newMask = s1.mask | s2.mask;
   uint16_t diff = outMask ^ newMask;
   if (!diff) return;
@@ -131,15 +97,17 @@ static void syncOutput() {
     uint16_t bit = (uint16_t(1) << b);
     if (!(diff & bit)) continue;
 
-    uint8_t key = bitToArduinoKey(b);
-    if (!key) continue;
+    KeyboardKeycode kc;
+    if (!bitToKeycode(b, kc)) continue;
 
-    if (newMask & bit) Keyboard.press(key);
-    else               Keyboard.release(key);
+    if (newMask & bit) NKROKeyboard.add(kc);
+    else               NKROKeyboard.remove(kc);
   }
 
+  NKROKeyboard.send();
   outMask = newMask;
 }
+
 
 class MergeKbdParser : public KeyboardReportParser {
 public:
@@ -147,30 +115,25 @@ public:
 
 protected:
   DevState &st;
-  /*
+
   void OnControlKeysChanged(uint8_t before, uint8_t after) override {
-    (void)before;
-    st.mods = after;
-    syncOutput();
+    (void)before; (void)after;
   }
-  */
 
   void OnKeyDown(uint8_t mod, uint8_t key) override {
     (void)mod;
     uint8_t b = usageToBit(key);
-    if (b != 0xFF) {
-      setKey(st.mask, b);
-      syncOutput();
-    }
+    if (b == 0xFF) return;
+    setKey(st.mask, b);
+    dirty = true;       
   }
 
   void OnKeyUp(uint8_t mod, uint8_t key) override {
     (void)mod;
     uint8_t b = usageToBit(key);
-    if (b != 0xFF) {
-      clrKey(st.mask, b);
-      syncOutput();
-    }
+    if (b == 0xFF) return;
+    clrKey(st.mask, b);
+    dirty = true;
   }
 };
 
@@ -179,20 +142,28 @@ MergeKbdParser kbdParser2(s2);
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial) {}
+  // if (false) while (!Serial) {}
 
   if (Usb.Init() == -1) {
+    Serial.println("USB Host init failed");
     while (1) {}
   }
 
-  Keyboard.begin();
+  NKROKeyboard.begin();
+  NKROKeyboard.releaseAll();
+  NKROKeyboard.send(); 
 
   Kbd1.SetReportParser(0, &kbdParser1);
   Kbd2.SetReportParser(0, &kbdParser2);
 
-  Serial.println("Ready");
+  Serial.println("Ready (NKRO merge)");
 }
 
 void loop() {
   Usb.Task();
+
+  if (dirty) {
+    dirty = false;
+    syncOutputOnce();
+  }
 }
