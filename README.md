@@ -1,6 +1,7 @@
 # keyboard-mergetool
 
 基于 **Arduino Leonardo + USB Host Shield 2.0** 的双键盘合并器，试图解决多键盘并行输入时的状态冲突。
+merge_all.ino适用于所有键盘，merge_mini.ino性能更高，但仅适用于部分键盘。
 
 ---
 
