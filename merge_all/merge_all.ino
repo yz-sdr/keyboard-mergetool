@@ -149,7 +149,7 @@ void setup() {
   Kbd1.SetReportParser(0, &kbdParser1);
   Kbd2.SetReportParser(0, &kbdParser2);
 
-  Serial.println("Ready (Full NKRO merge)");
+  Serial.println("Ready");
 }
 
 void loop() {
