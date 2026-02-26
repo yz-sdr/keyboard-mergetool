@@ -35,7 +35,10 @@ struct DevState {
 
 static DevState s1, s2;
 static uint16_t outMask = 0;
-static volatile bool dirty = false;
+static volatile uint8_t dirtyCount = 0;
+static uint32_t lastSendUs = 0;
+static const uint32_t SEND_MIN_INTERVAL_US = 1000; // 1ms
+
 
 static inline void setKey(uint16_t &m, uint8_t bit) { m |=  (uint16_t(1) << bit); }
 static inline void clrKey(uint16_t &m, uint8_t bit) { m &= ~(uint16_t(1) << bit); }
@@ -124,16 +127,24 @@ protected:
     (void)mod;
     uint8_t b = usageToBit(key);
     if (b == 0xFF) return;
-    setKey(st.mask, b);
-    dirty = true;       
+
+    uint16_t bit = (uint16_t(1) << b);
+    if (st.mask & bit) return;   
+
+    st.mask |= bit;
+    dirtyCount++;
   }
 
   void OnKeyUp(uint8_t mod, uint8_t key) override {
     (void)mod;
     uint8_t b = usageToBit(key);
     if (b == 0xFF) return;
-    clrKey(st.mask, b);
-    dirty = true;
+
+    uint16_t bit = (uint16_t(1) << b);
+    if (!(st.mask & bit)) return;   
+
+    st.mask &= ~bit;
+    dirtyCount++;
   }
 };
 
@@ -162,8 +173,14 @@ void setup() {
 void loop() {
   Usb.Task();
 
-  if (dirty) {
-    dirty = false;
-    syncOutputOnce();
+  uint8_t n = dirtyCount;
+  if (n) {
+    uint32_t now = micros();
+    if ((uint32_t)(now - lastSendUs) >= SEND_MIN_INTERVAL_US) {
+      dirtyCount = 0;
+      syncOutputOnce();
+      lastSendUs = now;
+    }
   }
 }
+
